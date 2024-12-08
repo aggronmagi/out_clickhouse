@@ -1,3 +1,17 @@
+// Copyright [2024] [aggronmagi]
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -33,8 +47,8 @@ type Type struct {
 
 //export FLBPluginRegister
 func FLBPluginRegister(def unsafe.Pointer) int {
-	log.Printf("[multiinstance] Register called")
-	return output.FLBPluginRegister(def, "multiinstance", "Testing multiple instances.")
+	log.Printf("[clickhouse] Register called")
+	return output.FLBPluginRegister(def, "clickhouse", "clickhouse output instances.")
 }
 
 //export FLBPluginInit
@@ -68,14 +82,14 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 
 //export FLBPluginFlush
 func FLBPluginFlush(data unsafe.Pointer, length C.int, tag *C.char) int {
-	log.Print("[multiinstance] Flush called for unknown instance")
+	log.Print("[clickhouse] Flush called for unknown instance")
 	return output.FLB_OK
 }
 
 //export FLBPluginFlushCtx
 func FLBPluginFlushCtx(ctxPtr, data unsafe.Pointer, length C.int, tag *C.char) int {
 	// Type assert context back into the original type for the Go variable
-	ctx := output.FLBPluginGetContext(ctxPtr).(*Context)
+	ctx := output.FLBPluginGetContext(ctxPtr).(*ClickhouseContext)
 
 	// check connections
 	err := ctx.Ping()
@@ -89,21 +103,21 @@ func FLBPluginFlushCtx(ctxPtr, data unsafe.Pointer, length C.int, tag *C.char) i
 
 //export FLBPluginExit
 func FLBPluginExit() int {
-	log.Print("[multiinstance] Exit called for unknown instance")
+	log.Print("[clickhouse] Exit called for unknown instance")
 	return output.FLB_OK
 }
 
 //export FLBPluginExitCtx
 func FLBPluginExitCtx(ctxPtr unsafe.Pointer) int {
 	// Type assert context back into the original type for the Go variable
-	ctx := output.FLBPluginGetContext(ctxPtr).(*Context)
+	ctx := output.FLBPluginGetContext(ctxPtr).(*ClickhouseContext)
 	ctx.Exit()
 	return output.FLB_OK
 }
 
 //export FLBPluginUnregister
 func FLBPluginUnregister(def unsafe.Pointer) {
-	log.Print("[multiinstance] Unregister called")
+	log.Print("[clickhouse] Unregister called")
 	output.FLBPluginUnregister(def)
 }
 

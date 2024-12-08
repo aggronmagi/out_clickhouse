@@ -1,0 +1,84 @@
+#+startup: content
+#+title: clickhouse output plugin
+* out_clickhouse
+fluent-bit output plugins, write data to clickhouse with nativte tcp
+
+** config
+
+| field name           | type     | default value | example                                        |
+|----------------------+----------+---------------+------------------------------------------------|
+| TCP                  | string   |               | 127.0.0.1:9000                                 |
+| HTTP                 | string   |               | 127.0.0.1:8123                                 |
+| DB                   | string   |               | default                                        |
+| UserName             | string   |               | default                                        |
+| Password             | string   |               |                                                |
+| Table                | string   |               | example                                        |
+| Columns              | string   |               | Col1=0, Col2="", Col3=1.2f, Col4=true, Col5="" |
+| RecordTime           | string   |               | time                                           |
+| Tags                 | string   |               | ignore,Server,Index                            |
+| TagSplit             | string   | .             |                                                |
+| Debug                | bool     | true          |                                                |
+| MaxOpenConns         | int      | 5             |                                                |
+| MaxIdleConns         | int      | 5             |                                                |
+| DialTimeout          | duration | 30s           |                                                |
+| ConnMaxLifetime      | duration | 10m           |                                                |
+| ConnOpenStrategy     | enum     | in_order      | in_order round_robin random                    |
+| Compression          | enum     | lz4           | none lz4 zstd gzip deflate br                  |
+| CompressionLevel     | int      | 3             | only use for zstd or br                        |
+| BlockBufferSize      | int      | 10            |                                                |
+| MaxCompressionBuffer | int      | 10240         |                                                |
+| ClientInfo           | string   |               | my_app/1.0,my_module/0.1                       |
+
+duration type parsed by golang [[https://pkg.go.dev/time#ParseDuration][time.ParseDuration]]
+
+#+begin_example
+ParseDuration parses a duration string. A duration string is a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix, such as "300ms", "-1.5h" or "2h45m". Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+#+end_example
+
+
+*** TCP/HTTP clickhouse addrs.
+One must be set. At the same time, set the priority to use TCP. Use ',' to separate multiple addresses.
+
+必须设置一个.同时设置优先使用TCP. 多个地址使用','分隔.
+*** Columns batchinsert column config.
+
+Each column must be set with a name and a supported type. For time types, you can choose to follow the format of the parsing time (golang time. ParseTime)
+
+每一列必须设置名称和支持的类型. 对于时间类型,可选在后面带上解析时间的格式(golang [[https://pkg.go.dev/time#Parse][time.Parse]])
+
+Support Type:
+ - UInt8、UInt16、UInt32、UInt64、Int8、Int16、Int32、Int64
+ - Float32 Float64
+ - Boolean
+ - String
+ - Date Date32 DateTime DateTime64
+
+
+多个列之间用','分隔.
+
+Multiple columns are separated by ','.
+
+
+例子:
+
+uid|Int64,event|String,attributes|String,time|DateTime64|2006-01-02T15:04:05.000+08:00
+
+
+*** RecordTime
+string type. If this field is set, the collection time will be written to clickhouse, and the field name is the value of ~RecordTime~.
+
+string类型 如果设置了此字段,会将采集时间写入clickhouse,字段名就是 ~RecordTime~ 的值.
+
+*** Tags,TagSplit
+These two fields are used to write part of the data in the tag to clickhouse. Use TagSplit to split the tag, and then write it to clickhouse according to the Tags configuration. For example, the value of a tag is 'server.[server_name].[server_id]' . If you want to write server_name and server_id to clickhouse, configure Tags as ~ignore,server|String,id|Int32~. Then when writing the clickhouse corresponding table, the corresponding string in the tag will be written to clickhouse. The part that you do not want to insert into clickhouse is written as ignore.
+
+
+这两个字段是为了将tag中的部分数据写入到clickhouse. 使用TagSplit对tag进行拆分,然后根据Tags配置写入clickhouse.
+
+例如有tag的值是 'server.[server_name].[server_id]'. 想把server_name和server_id写入到clickhouse,Tags配置成 ~ignore,server|String,id|Int32~.
+那么写入clickhouse对应表时候会将tag内对应的字符串写入clickhouse.不想插入到clickhouse的部分,写成ignore.
+*** Others
+
+For other configurations, please refer to the clickhouse documentation [[https://pkg.go.dev/github.com/ClickHouse/clickhouse-go/v2#Options][Options]].
+
+其他配置请查看clickhouse文档 [[https://pkg.go.dev/github.com/ClickHouse/clickhouse-go/v2#Options][Options]].

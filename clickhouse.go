@@ -1,3 +1,17 @@
+// Copyright [2024] [aggronmagi]
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -15,16 +29,23 @@ import (
 	"github.com/fluent/fluent-bit-go/output"
 )
 
-type Context struct {
+type ColumnParser func(string) (interface{}, error)
+
+type ClickhouseContext struct {
 	// clickhouse native link option
 	Opt *clickhouse.Options
 
 	// benchmark insert option
 	Columns    []string
 	Defaults   []any
+	ColType    []ColumnParser
 	RecordTime string
+	TimeFormat string
+	TimeStamp  int // 1:ns 2:us 3:ms 4:s
 	Tags       []string
+	TagType    []ColumnParser
 	TagSplit   string
+	TableName  string
 	BenchStmt  string
 
 	// running option
@@ -32,11 +53,11 @@ type Context struct {
 }
 
 // NewContext get clickhouse option
-func NewContext(get func(key string, defaults ...string) string) (ctx *Context, err error) {
-	ctx = &Context{
+func NewContext(get func(key string, defaults ...string) string) (pctx *ClickhouseContext, err error) {
+	pctx = &ClickhouseContext{
 		Opt: &clickhouse.Options{},
 	}
-	opt := ctx.Opt
+	opt := pctx.Opt
 	if val := get("TCP"); val != "" {
 		opt.Addr = strings.Split(val, ",")
 	} else if val = get("HTTP"); val != "" {
@@ -66,6 +87,7 @@ func NewContext(get func(key string, defaults ...string) string) (ctx *Context, 
 		err = errors.New("not set Table")
 		return
 	}
+	pctx.TableName = tableName
 
 	if val := get("Debug"); val != "" {
 		ok, err := strconv.ParseBool(val)
@@ -201,107 +223,196 @@ func NewContext(get func(key string, defaults ...string) string) (ctx *Context, 
 		})
 	}
 
-	cfg = get("Columns")
-	if cfg == "" {
-		err = fmt.Errorf("invalid Columns value,empty")
+	// cfg = get("Columns")
+	// if cfg != "" {
+	// }
+	err = parseColumns(pctx, get("Columns"))
+	if err != nil {
 		return
-	}
-	arr = strings.Split(cfg, ",")
-	ctx.Columns = make([]string, 0, len(arr))
-	for _, v := range arr {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			err = fmt.Errorf("invalid Columns value[%s], has empty string", cfg)
-			return
-		}
-		pair := strings.Split(v, "=")
-		if len(pair) != 2 {
-			err = fmt.Errorf("invalid Columns value[%s], need format KEY=Default", v)
-			return
-		}
-		// default value
-		var def any
-		def, err = convertColumnDefaultValue(pair[1])
-		if err != nil {
-			err = fmt.Errorf("invalid Columns value[%s], parse default value failed,%+v", v, err)
-			return
-		}
-		ctx.Columns = append(ctx.Columns, strings.TrimSpace(pair[0]))
-		ctx.Defaults = append(ctx.Defaults, def)
 	}
 
 	cfg = strings.TrimSpace(get("RecordTime"))
 	if cfg != "" {
-		ctx.RecordTime = cfg
+		arr = strings.Split(cfg, ",")
+		if len(arr) > 1 {
+			pctx.RecordTime = arr[0]
+			switch arr[1] {
+			case "ns":
+				pctx.TimeStamp = 1
+			case "us":
+				pctx.TimeStamp = 2
+			case "ms":
+				pctx.TimeStamp = 3
+			case "s":
+				pctx.TimeStamp = 4
+			default:
+				_, err = time.Parse(arr[1], arr[1])
+				if err != nil {
+					err = fmt.Errorf("invalid RecordTime value,timeFormat invalid. err:%w", err)
+					return
+				}
+				pctx.TimeFormat = arr[1]
+			}
+		} else {
+			pctx.RecordTime = cfg
+		}
 	}
 
 	cfg = get("Tags")
-	split := get("TagSplit", ",")
-	arr = strings.Split(cfg, ".")
-	for _, v := range arr {
-		v = strings.TrimSpace(v)
-		if v == "ignore" {
-			v = ""
+	split := get("TagSplit", ".")
+	if len(cfg) > 0 {
+		arr = strings.Split(cfg, ",")
+		for _, v := range arr {
+			v = strings.TrimSpace(v)
+			if v == "ignore" {
+				v = ""
+			}
+			if strings.Contains(v, "|") {
+				typInfo := strings.Split(v, "|")
+				v = typInfo[0]
+				parser, _, err := parseColumnType(typInfo[1:])
+				if err != nil {
+					err = fmt.Errorf("invalid Tags value[%s], parse type failed,%+v", v, err)
+					return nil, err
+				}
+				pctx.TagType = append(pctx.TagType, parser)
+			} else {
+				pctx.TagType = append(pctx.TagType, parseString)
+			}
+
+			pctx.Tags = append(pctx.Tags, v)
+			pctx.TagSplit = split
 		}
-		ctx.Tags = append(ctx.Tags, v)
-		ctx.TagSplit = split
 	}
-
-	columns := make([]string, 0, len(ctx.Columns)+1+len(ctx.Tags))
-	if len(ctx.RecordTime) > 0 {
-		columns = append(columns, ctx.RecordTime)
-	}
-	for _, v := range ctx.Tags {
-		if len(v) > 0 {
-			columns = append(columns, v)
-		}
-	}
-	columns = append(columns, ctx.Columns...)
-
-	ctx.BenchStmt = "INSERT INTO " + tableName + "(" + strings.Join(columns, ",") + ")"
-
 	return
 }
 
-func (ctx *Context) Init() (err error) {
-	conn, err := clickhouse.Open(ctx.Opt)
+func (pctx *ClickhouseContext) Init() (err error) {
+	conn, err := clickhouse.Open(pctx.Opt)
 	if err != nil {
 		return fmt.Errorf("open clickhouse native connection failed,%w", err)
 	}
 
-	ctx.Conn = conn
-	return ctx.Ping()
+	pctx.Conn = conn
+	err = pctx.Ping()
+	if err != nil {
+		return
+	}
+
+	if len(pctx.Columns) > 0 {
+		columns := make([]string, 0, len(pctx.Columns)+1+len(pctx.Tags))
+		if len(pctx.RecordTime) > 0 {
+			columns = append(columns, pctx.RecordTime)
+		}
+		for _, v := range pctx.Tags {
+			if len(v) > 0 {
+				columns = append(columns, v)
+			}
+		}
+		columns = append(columns, pctx.Columns...)
+
+		pctx.BenchStmt = "INSERT INTO " + pctx.Opt.Auth.Database + "." + pctx.TableName + "(" + strings.Join(columns, ",") + ")"
+	}
+
+	return nil
 }
 
-func (ctx *Context) Ping() error {
-	cctx, cancel := context.WithTimeout(context.Background(), ctx.Opt.DialTimeout)
+func (pctx *ClickhouseContext) Ping() error {
+	cctx, cancel := context.WithTimeout(context.Background(), pctx.Opt.DialTimeout)
 	defer cancel()
-	err := ctx.Conn.Ping(cctx)
+	err := pctx.Conn.Ping(cctx)
 	if err != nil {
 		return fmt.Errorf("ping clickhouse failed,%w", err)
 	}
 	return nil
 }
 
-func (ctx *Context) BenchInsert(tag string, dec *output.FLBDecoder) int {
-
+func (pctx *ClickhouseContext) BenchInsert(tag string, dec *output.FLBDecoder) int {
 	var tagValues []any
-	if len(ctx.TagSplit) > 0 {
-		values := strings.Split(tag, ctx.TagSplit)
-		if len(values) != len(ctx.Tags) {
-			log.Printf("clickhouse tag invalid, input:%+v need:%+v\n", values, ctx.Tags)
+	if len(pctx.Tags) > 0 {
+		values := strings.Split(tag, pctx.TagSplit)
+		if len(values) != len(pctx.Tags) {
+			log.Printf("clickhouse tag invalid, input:%+v need:%+v\n", values, pctx.Tags)
 			return output.FLB_ERROR
 		}
-		for k := range ctx.Tags {
-			if len(ctx.Tags[k]) > 0 {
-				tagValues = append(tagValues, values[k])
+		for k := range pctx.Tags {
+			if len(pctx.Tags[k]) > 0 {
+				val, err := pctx.TagType[k](values[k])
+				if err != nil {
+					log.Printf("clickhouse tag parse failed, tag:%s value:%s err:%v\n", pctx.Tags[k], values[k], err)
+					return output.FLB_ERROR
+				}
+				tagValues = append(tagValues, val)
 			}
 		}
 	}
 
-	batch, err := ctx.Conn.PrepareBatch(context.Background(), ctx.BenchStmt)
+	// if len(pctx.Columns) == 0 {
+	// 	return pctx.insertOneByOne(tagValues, dec)
+	// }
+	return pctx.insertBatch(tagValues, dec)
+}
+
+// func (pctx *ClickhouseContext) insertOneByOne(tagValues []any, dec *output.FLBDecoder) int {
+// 	for {
+// 		ret, ts, record := output.GetRecord(dec)
+// 		if ret != 0 {
+// 			break
+// 		}
+
+// 		columns := make([]any, 0, len(pctx.Columns)+len(tagValues)+1)
+// 		if len(pctx.RecordTime) > 0 {
+// 			var timestamp time.Time
+// 			switch t := ts.(type) {
+// 			case output.FLBTime:
+// 				timestamp = ts.(output.FLBTime).Time
+// 			case uint64:
+// 				timestamp = time.Unix(int64(t), 0)
+// 			default:
+// 				fmt.Println("time provided invalid, defaulting to now.")
+// 				timestamp = time.Now()
+// 			}
+// 			columns = append(columns, timestamp)
+// 		}
+// 		if len(tagValues) > 0 {
+// 			columns = append(columns, tagValues...)
+// 		}
+
+// 		buf := strings.Builder{}
+// 		buf.Grow(1024)
+// 		buf.WriteString("INSERT INTO ")
+// 		buf.WriteString(pctx.TableName)
+// 		buf.WriteString("(")
+// 		if len(pctx.RecordTime) > 0 {
+// 			buf.WriteString(pctx.RecordTime)
+// 			buf.WriteString(",")
+// 		}
+// 		if len(tagValues) > 0 {
+// 			buf.WriteString(strings.Join(pctx.Tags, ","))
+// 		}
+// 		for k, v := range record {
+// 			buf.WriteString(",")
+// 			buf.WriteString(k.(string))
+// 			columns = append(columns, v)
+// 		}
+// 		buf.WriteString(strings.Join(pctx.Columns, ","))
+// 		buf.WriteString(") VALUES(")
+// 		buf.WriteString(strings.Repeat("?,", len(columns)-1))
+// 		buf.WriteString("?)")
+// 		err := pctx.Conn.Exec(context.Background(), buf.String(), columns...)
+// 		if err != nil {
+// 			log.Printf("clickhouse insert failed, stmt:%s err:%v\n", buf.String(), err)
+// 			return output.FLB_RETRY
+// 		}
+// 	}
+// 	return output.FLB_OK
+// }
+
+func (pctx *ClickhouseContext) insertBatch(tagValues []any, dec *output.FLBDecoder) int {
+
+	batch, err := pctx.Conn.PrepareBatch(context.Background(), pctx.BenchStmt)
 	if err != nil {
-		log.Printf("clickhouse prepare batch failed, stmt:%s err:%v\n", ctx.BenchStmt, err)
+		log.Printf("clickhouse prepare batch failed, stmt:%s err:%v\n", pctx.BenchStmt, err)
 		return output.FLB_RETRY
 	}
 
@@ -311,8 +422,8 @@ func (ctx *Context) BenchInsert(tag string, dec *output.FLBDecoder) int {
 			break
 		}
 
-		columns := make([]any, 0, len(ctx.Columns)+len(tagValues)+1)
-		if len(ctx.RecordTime) > 0 {
+		columns := make([]any, 0, len(pctx.Columns)+len(tagValues)+1)
+		if len(pctx.RecordTime) > 0 {
 			var timestamp time.Time
 			switch t := ts.(type) {
 			case output.FLBTime:
@@ -323,100 +434,46 @@ func (ctx *Context) BenchInsert(tag string, dec *output.FLBDecoder) int {
 				fmt.Println("time provided invalid, defaulting to now.")
 				timestamp = time.Now()
 			}
-			columns = append(columns, timestamp.UTC().Format(time.RFC3339Nano))
+			columns = append(columns, timestamp)
 		}
 		if len(tagValues) > 0 {
 			columns = append(columns, tagValues...)
 		}
-		for idx := range ctx.Columns {
-			value, ok := record[ctx.Columns[idx]]
+		for idx := range pctx.Columns {
+			value, ok := record[pctx.Columns[idx]]
 			if !ok {
-				columns = append(columns, ctx.Defaults[idx])
+				if pf, ok := pctx.Defaults[idx].(func() any); ok {
+					columns = append(columns, pf())
+					continue
+				}
+				columns = append(columns, pctx.Defaults[idx])
 				continue
 			}
 			if str, ok := value.([]byte); ok {
-				columns = append(columns, unsafe.String(unsafe.SliceData(str), len(str)))
+				val, err := pctx.ColType[idx](unsafe.String(unsafe.SliceData(str), len(str)))
+				if err != nil {
+					log.Printf("clickhouse column parse failed, column:%s value:%s err:%v\n", pctx.Columns[idx], unsafe.String(unsafe.SliceData(str), len(str)), err)
+					return output.FLB_ERROR
+				}
+				columns = append(columns, val)
 			} else {
 				columns = append(columns, value)
 			}
 		}
 		err = batch.Append(columns...)
 		if err != nil {
+			log.Printf("clickhouse batch append failed,columns:[%#v] err:%v\n", columns, err)
 			return output.FLB_RETRY
 		}
 	}
 	err = batch.Send()
 	if err != nil {
+		log.Printf("clickhouse batch send failed, err:%v\n", err)
 		return output.FLB_RETRY
 	}
 	return output.FLB_OK
 }
 
-func (ctx *Context) Exit() {
+func (pctx *ClickhouseContext) Exit() {
 
-}
-
-func convertColumnDefaultValue(in string) (val any, err error) {
-	in = strings.TrimSpace(in)
-	// string
-	if len(in) == 0 || in == `""` || in == `''` {
-		val = ""
-		return
-	}
-	if strings.HasPrefix(in, `"`) {
-		if !strings.HasSuffix(in, `"`) {
-			err = errors.New(`invalid string value, " not match `)
-			return
-		}
-		val = in[1 : len(in)-1]
-		return
-	}
-	if strings.HasPrefix(in, `'`) {
-		if !strings.HasSuffix(in, `'`) {
-			err = errors.New(`invalid string value, ' not match `)
-			return
-		}
-		val = in[1 : len(in)-1]
-		return
-	}
-	// float
-	if strings.HasSuffix(in, `f`) {
-		var fv float64
-		fv, err = strconv.ParseFloat(in[:len(in)-1], 64)
-		if err != nil {
-			err = errors.New(`invalid string value, ' not match `)
-			return
-		}
-		val = fv
-		return
-	}
-	// bool
-	switch strings.ToLower(in) {
-	case "true", "on", "t", "y", "yes":
-		val = true
-		return
-	case "false", "off", "f", "n", "no":
-		val = false
-		return
-	}
-	// unsigned
-	if strings.HasSuffix(in, `u`) {
-		var uv uint64
-		uv, err = strconv.ParseUint(in[:len(in)-1], 10, 64)
-		if err != nil {
-			err = errors.New(`invalid string value, ' not match `)
-			return
-		}
-		val = uv
-		return
-	}
-	// signed
-	nv, err := strconv.ParseInt(in, 10, 64)
-	if err != nil {
-		return
-	}
-
-	val = nv
-
-	return
 }
