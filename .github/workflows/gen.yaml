@@ -1,0 +1,57 @@
+name: generate binary
+ 
+on:
+  push:
+    branches: [ * ]
+
+    #tags:
+    #  - 'v*' # 只有推送带有 v 开头的标签时触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23.0'] # 根据需要调整Go版本
+        platform: [windows, linux, darwin]
+        arch: [amd64, arm64]
+
+    steps:
+    - name: Check out the repo
+      uses: actions/checkout@v3
+
+    - name: Set up Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v3
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Build binaries
+      run: |
+        mkdir -p dist/${{ matrix.platform }}_${{ matrix.arch }}
+        FILE_NAME="out_clickhouse"
+        if [ "${{ matrix.platform }}" == "windows" ]; then
+          FILE_NAME="${FILE_NAME}.dll"
+        else
+          FILE_NAME="${FILE_NAME}.so"
+        fi
+        CGO_ENABLED=0 GOOS=${{ matrix.platform }} GOARCH=${{ matrix.arch }} go build -buildmode=c-shared -o dist/${{ matrix.platform }}_${{ matrix.arch }}/${FILE_NAME}
+
+    - name: Package binaries into tar.gz
+      if: matrix.platform != 'windows' # Windows通常使用.zip而不是.tar.gz
+      run: |
+        cd dist/${{ matrix.platform }}_${{ matrix.arch }}
+        tar -czvf ../out_clickhouse_${{ matrix.platform }}_${{ matrix.arch }}.tar.gz out_clickhouse.so
+
+    - name: Package binaries into zip for Windows
+      if: matrix.platform == 'windows'
+      run: |
+        cd dist/${{ matrix.platform }}_${{ matrix.arch }}
+        zip -9 ../out_clickhouse_${{ matrix.platform }}_${{ matrix.arch }}.zip out_clickhouse.dll
+
+    - name: Upload binaries to release
+      id: upload-release
+      uses: softprops/action-gh-release@v1
+      #if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: dist/*.tar.gz dist/*.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
