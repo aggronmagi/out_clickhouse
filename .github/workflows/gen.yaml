@@ -39,12 +39,14 @@ jobs:
       run: |
         cd dist/
         tar -czvf ./out_clickhouse_${{ matrix.platform }}_${{ matrix.arch }}.tar.gz ${{ matrix.platform }}_${{ matrix.arch }}/out_clickhouse.so
+        cd -
 
     - name: Package binaries into zip for Windows
       if: matrix.platform == 'windows'
       run: |
         cd dist/
         zip -9 ./out_clickhouse_${{ matrix.platform }}_${{ matrix.arch }}.zip ${{ matrix.platform }}_${{ matrix.arch }}/out_clickhouse.dll
+        cd -
 
     - name: Upload binaries to release
       id: upload-release
