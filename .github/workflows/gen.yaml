@@ -2,7 +2,8 @@ name: generate binary
  
 on:
   push:
-    branches: [ * ]
+    branches: 
+      - "**"
 
     #tags:
     #  - 'v*' # 只有推送带有 v 开头的标签时触发
